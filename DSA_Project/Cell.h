@@ -4,7 +4,8 @@ enum class CellState
 {
     Empty,
     Food,
-    Snake
+    Snake,
+    Obstacle
 };
 
 class Cell

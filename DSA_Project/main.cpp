@@ -9,6 +9,7 @@ const int GRID_WIDTH  = 20;
 const int GRID_HEIGHT = 20;
 const int CELL_SIZE   = 30; // pixels per cell
 const sf::Time MOVE_DELAY = sf::milliseconds(150); // time between snake steps
+const int OBSTACLE_COUNT = 10;
 
 struct Position
 {
@@ -43,6 +44,22 @@ bool spawnFood(std::vector<Cell>& grid)
     return true;
 }
 
+void placeObstacles(std::vector<Cell>& grid, int safeRow)
+{
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> pick(0, static_cast<int>(grid.size()) - 1);
+
+    int placed = 0;
+    while (placed < OBSTACLE_COUNT)
+    {
+        Cell& cell = grid[pick(rng)];
+        if (cell.getState() != CellState::Empty || cell.y == safeRow)
+            continue;
+        cell.setState(CellState::Obstacle);
+        placed++;
+    }
+}
+
 bool moveSnake(std::list<Position>& snake, std::vector<Cell>& grid, Position direction, int& score)
 {
     Position head = snake.front();
@@ -61,7 +78,8 @@ bool moveSnake(std::list<Position>& snake, std::vector<Cell>& grid, Position dir
         grid[toIndex(tail)].setState(CellState::Empty);
     }
 
-    if (grid[toIndex(newHead)].getState() == CellState::Snake)
+    CellState target = grid[toIndex(newHead)].getState();
+    if (target == CellState::Snake || target == CellState::Obstacle)
         return false;
 
     snake.push_front(newHead);
@@ -123,7 +141,23 @@ void drawSnakeEnd(sf::RenderWindow& window, Position cellPos, Position direction
     }
 }
 
-void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const std::list<Position>& snake)
+void drawGameOver(sf::RenderWindow& window, const sf::Font& font)
+{
+    sf::Vector2f windowSize(static_cast<float>(GRID_WIDTH * CELL_SIZE), static_cast<float>(GRID_HEIGHT * CELL_SIZE));
+
+    sf::RectangleShape overlay(windowSize);
+    overlay.setFillColor(sf::Color(0, 0, 0, 150));
+    window.draw(overlay);
+
+    sf::Text text(font, "Game Over!", 56);
+    text.setFillColor(sf::Color::Red);
+    sf::FloatRect bounds = text.getLocalBounds();
+    text.setOrigin(bounds.position + bounds.size / 2.f);
+    text.setPosition(windowSize / 2.f);
+    window.draw(text);
+}
+
+void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const std::list<Position>& snake, bool gameOver, const sf::Font& font)
 {
     sf::RectangleShape cellShape({ CELL_SIZE - 1.f, CELL_SIZE - 1.f });
     sf::Color emptyColor(40, 40, 40);
@@ -146,6 +180,7 @@ void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const 
         {
         case CellState::Empty: cellShape.setFillColor(emptyColor);     break;
         case CellState::Food:  cellShape.setFillColor(sf::Color::Red); break;
+        case CellState::Obstacle: cellShape.setFillColor(sf::Color(128, 128, 128)); break;
         case CellState::Snake:
             if (index == headIndex || index == tailIndex)
                 cellShape.setFillColor(emptyColor);
@@ -159,6 +194,9 @@ void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const 
 
     drawSnakeEnd(window, tail, { tail.x - beforeTail.x, tail.y - beforeTail.y }, false);
     drawSnakeEnd(window, head, { head.x - neck.x, head.y - neck.y }, true);
+
+    if (gameOver)
+        drawGameOver(window, font);
 
     window.display();
 }
@@ -181,10 +219,15 @@ int main()
         grid[toIndex(p)].setState(CellState::Snake);
     }
 
+    placeObstacles(grid, startY);
     spawnFood(grid);
 
     sf::RenderWindow window(sf::VideoMode({ GRID_WIDTH * CELL_SIZE, GRID_HEIGHT * CELL_SIZE }), "Snake - Score: 0");
     window.setFramerateLimit(60);
+
+    sf::Font font;
+    if (!font.openFromFile("C:/Windows/Fonts/arial.ttf"))
+        return 1;
 
     Position direction{ 1, 0 };
     Position nextDirection = direction;
@@ -227,7 +270,7 @@ int main()
                 window.setTitle("Snake - Score: " + std::to_string(score));
         }
 
-        displayGrid(window, grid, snake);
+        displayGrid(window, grid, snake, gameOver, font);
     }
 
     return 0;
