@@ -1,6 +1,7 @@
 #include <SFML/Graphics.hpp>
 #include <vector>
 #include <list>
+#include <queue>
 #include <random>
 #include <string>
 #include "Cell.h"
@@ -11,10 +12,42 @@ const int CELL_SIZE   = 30; // pixels per cell
 const sf::Time MOVE_DELAY = sf::milliseconds(150); // time between snake steps
 const int OBSTACLE_COUNT = 10;
 
+const sf::Time BOOSTED_MOVE_DELAY = sf::milliseconds(75);
+const sf::Time FIRST_POWERUP      = sf::seconds(8);
+const sf::Time POWERUP_INTERVAL   = sf::seconds(15);
+const sf::Time POWERUP_LIFETIME   = sf::seconds(6);
+const sf::Time BOOST_DURATION     = sf::seconds(5);
+const sf::Time FRENZY_DURATION    = sf::seconds(5);
+
+std::mt19937 rng(std::random_device{}());
+
 struct Position
 {
     int x;
     int y;
+};
+
+enum class EventType
+{
+    SpawnPowerUp,
+    PowerUpExpires,
+    SpeedBoostEnds,
+    FrenzyEnds
+};
+
+struct TimedEvent
+{
+    sf::Time dueTime;
+    EventType type;
+    int cellIndex;
+};
+
+struct LaterFirst
+{
+    bool operator()(const TimedEvent& a, const TimedEvent& b) const
+    {
+        return a.dueTime > b.dueTime;
+    }
 };
 
 int toIndex(int x, int y)
@@ -27,26 +60,24 @@ int toIndex(Position p)
     return toIndex(p.x, p.y);
 }
 
-bool spawnFood(std::vector<Cell>& grid)
+int spawnInEmptyCell(std::vector<Cell>& grid, CellState state)
 {
-    static std::mt19937 rng(std::random_device{}());
-
     std::vector<int> emptyCells;
     for (int i = 0; i < static_cast<int>(grid.size()); i++)
         if (grid[i].getState() == CellState::Empty)
             emptyCells.push_back(i);
 
     if (emptyCells.empty())
-        return false;
+        return -1;
 
     std::uniform_int_distribution<int> pick(0, static_cast<int>(emptyCells.size()) - 1);
-    grid[emptyCells[pick(rng)]].setState(CellState::Food);
-    return true;
+    int index = emptyCells[pick(rng)];
+    grid[index].setState(state);
+    return index;
 }
 
 void placeObstacles(std::vector<Cell>& grid, int safeRow)
 {
-    static std::mt19937 rng(std::random_device{}());
     std::uniform_int_distribution<int> pick(0, static_cast<int>(grid.size()) - 1);
 
     int placed = 0;
@@ -60,7 +91,7 @@ void placeObstacles(std::vector<Cell>& grid, int safeRow)
     }
 }
 
-bool moveSnake(std::list<Position>& snake, std::vector<Cell>& grid, Position direction, int& score)
+bool moveSnake(std::list<Position>& snake, std::vector<Cell>& grid, Position direction, int& score, bool frenzyActive, CellState& eaten)
 {
     Position head = snake.front();
     Position newHead{ head.x + direction.x, head.y + direction.y };
@@ -69,9 +100,11 @@ bool moveSnake(std::list<Position>& snake, std::vector<Cell>& grid, Position dir
     if (newHead.x < 0 || newHead.x >= GRID_WIDTH || newHead.y < 0 || newHead.y >= GRID_HEIGHT)
         return false;
 
-    bool ateFood = grid[toIndex(newHead)].getState() == CellState::Food;
+    eaten = grid[toIndex(newHead)].getState();
+    bool ateFood = eaten == CellState::Food;
+    bool grow = ateFood && !frenzyActive;
 
-    if (!ateFood)
+    if (!grow)
     {
         Position tail = snake.back();
         snake.pop_back();
@@ -88,7 +121,7 @@ bool moveSnake(std::list<Position>& snake, std::vector<Cell>& grid, Position dir
     if (ateFood)
     {
         score++;
-        if (!spawnFood(grid))
+        if (!frenzyActive && spawnInEmptyCell(grid, CellState::Food) == -1)
             return false; // board is full
     }
 
@@ -188,6 +221,8 @@ void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const 
         case CellState::Empty: cellShape.setFillColor(emptyColor);     break;
         case CellState::Food:  cellShape.setFillColor(sf::Color::Red); break;
         case CellState::Obstacle: cellShape.setFillColor(sf::Color(128, 128, 128)); break;
+        case CellState::SpeedBoost: cellShape.setFillColor(sf::Color::Cyan); break;
+        case CellState::Frenzy: cellShape.setFillColor(sf::Color::Magenta); break;
         case CellState::Snake:
             if (index == headIndex || index == tailIndex)
                 cellShape.setFillColor(emptyColor);
@@ -231,7 +266,7 @@ void resetGame(std::vector<Cell>& grid, std::list<Position>& snake)
     }
 
     placeObstacles(grid, startY);
-    spawnFood(grid);
+    spawnInEmptyCell(grid, CellState::Food);
 }
 
 int main()
@@ -255,6 +290,15 @@ int main()
     bool gameOver = false;
     int score = 0;
 
+    std::priority_queue<TimedEvent, std::vector<TimedEvent>, LaterFirst> events;
+    sf::Clock gameClock;
+    sf::Time moveDelay = MOVE_DELAY;
+    sf::Time boostEndsAt;
+    sf::Time frenzyEndsAt;
+    bool frenzyActive = false;
+
+    events.push({ FIRST_POWERUP, EventType::SpawnPowerUp, -1 });
+
     while (window.isOpen())
     {
         while (const std::optional event = window.pollEvent())
@@ -273,6 +317,12 @@ int main()
                     score = 0;
                     gameOver = false;
                     moveClock.restart();
+
+                    events = {};
+                    gameClock.restart();
+                    moveDelay = MOVE_DELAY;
+                    frenzyActive = false;
+                    events.push({ FIRST_POWERUP, EventType::SpawnPowerUp, -1 });
                 }
                 else if (key->code == sf::Keyboard::Key::Up && direction.y != 1)
                     nextDirection = { 0, -1 };
@@ -285,13 +335,73 @@ int main()
             }
         }
 
-        if (!gameOver && moveClock.getElapsedTime() >= MOVE_DELAY)
+        sf::Time now = gameClock.getElapsedTime();
+
+        while (!gameOver && !events.empty() && events.top().dueTime <= now)
+        {
+            TimedEvent e = events.top();
+            events.pop();
+
+            switch (e.type)
+            {
+            case EventType::SpawnPowerUp:
+            {
+                CellState type = (rng() % 2 == 0) ? CellState::SpeedBoost : CellState::Frenzy;
+                int index = spawnInEmptyCell(grid, type);
+                if (index != -1)
+                    events.push({ now + POWERUP_LIFETIME, EventType::PowerUpExpires, index });
+                events.push({ now + POWERUP_INTERVAL, EventType::SpawnPowerUp, -1 });
+                break;
+            }
+            case EventType::PowerUpExpires:
+            {
+                CellState s = grid[e.cellIndex].getState();
+                if (s == CellState::SpeedBoost || s == CellState::Frenzy)
+                    grid[e.cellIndex].setState(CellState::Empty);
+                break;
+            }
+            case EventType::SpeedBoostEnds:
+                if (now >= boostEndsAt)
+                    moveDelay = MOVE_DELAY;
+                break;
+            case EventType::FrenzyEnds:
+                if (now >= frenzyEndsAt)
+                {
+                    for (Cell& cell : grid)
+                        if (cell.getState() == CellState::Food)
+                            cell.setState(CellState::Empty);
+                    spawnInEmptyCell(grid, CellState::Food);
+                    frenzyActive = false;
+                }
+                break;
+            }
+        }
+
+        if (!gameOver && moveClock.getElapsedTime() >= moveDelay)
         {
             moveClock.restart();
             direction = nextDirection;
 
-            if (!moveSnake(snake, grid, direction, score))
+            CellState eaten = CellState::Empty;
+            if (!moveSnake(snake, grid, direction, score, frenzyActive, eaten))
+            {
                 gameOver = true;
+            }
+            else if (eaten == CellState::SpeedBoost)
+            {
+                moveDelay = BOOSTED_MOVE_DELAY;
+                boostEndsAt = now + BOOST_DURATION;
+                events.push({ boostEndsAt, EventType::SpeedBoostEnds, -1 });
+            }
+            else if (eaten == CellState::Frenzy)
+            {
+                frenzyActive = true;
+                for (Cell& cell : grid)
+                    if (cell.getState() == CellState::Empty)
+                        cell.setState(CellState::Food);
+                frenzyEndsAt = now + FRENZY_DURATION;
+                events.push({ frenzyEndsAt, EventType::FrenzyEnds, -1 });
+            }
         }
 
         displayGrid(window, grid, snake, gameOver, font, score);

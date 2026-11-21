@@ -5,7 +5,9 @@ enum class CellState
     Empty,
     Food,
     Snake,
-    Obstacle
+    Obstacle,
+    SpeedBoost,
+    Frenzy
 };
 
 class Cell
