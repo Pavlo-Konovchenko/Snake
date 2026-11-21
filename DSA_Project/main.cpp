@@ -155,9 +155,16 @@ void drawGameOver(sf::RenderWindow& window, const sf::Font& font)
     text.setOrigin(bounds.position + bounds.size / 2.f);
     text.setPosition(windowSize / 2.f);
     window.draw(text);
+
+    sf::Text hint(font, "Press R to restart", 24);
+    hint.setFillColor(sf::Color::White);
+    sf::FloatRect hintBounds = hint.getLocalBounds();
+    hint.setOrigin(hintBounds.position + hintBounds.size / 2.f);
+    hint.setPosition({ windowSize.x / 2.f, windowSize.y / 2.f + 50.f });
+    window.draw(hint);
 }
 
-void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const std::list<Position>& snake, bool gameOver, const sf::Font& font)
+void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const std::list<Position>& snake, bool gameOver, const sf::Font& font, int score)
 {
     sf::RectangleShape cellShape({ CELL_SIZE - 1.f, CELL_SIZE - 1.f });
     sf::Color emptyColor(40, 40, 40);
@@ -195,21 +202,25 @@ void displayGrid(sf::RenderWindow& window, const std::vector<Cell>& grid, const 
     drawSnakeEnd(window, tail, { tail.x - beforeTail.x, tail.y - beforeTail.y }, false);
     drawSnakeEnd(window, head, { head.x - neck.x, head.y - neck.y }, true);
 
+    sf::Text scoreText(font, "Score: " + std::to_string(score), 22);
+    scoreText.setFillColor(sf::Color::White);
+    scoreText.setPosition({ 8.f, 4.f });
+    window.draw(scoreText);
+
     if (gameOver)
         drawGameOver(window, font);
 
     window.display();
 }
 
-int main()
+void resetGame(std::vector<Cell>& grid, std::list<Position>& snake)
 {
-    std::vector<Cell> grid;
-    grid.reserve(GRID_WIDTH * GRID_HEIGHT);
+    grid.clear();
     for (int y = 0; y < GRID_HEIGHT; y++)
         for (int x = 0; x < GRID_WIDTH; x++)
             grid.push_back(Cell(x, y));
 
-    std::list<Position> snake;
+    snake.clear();
     int startX = GRID_WIDTH / 2;
     int startY = GRID_HEIGHT / 2;
     for (int i = 0; i < 3; i++)
@@ -221,8 +232,16 @@ int main()
 
     placeObstacles(grid, startY);
     spawnFood(grid);
+}
 
-    sf::RenderWindow window(sf::VideoMode({ GRID_WIDTH * CELL_SIZE, GRID_HEIGHT * CELL_SIZE }), "Snake - Score: 0");
+int main()
+{
+    std::vector<Cell> grid;
+    grid.reserve(GRID_WIDTH * GRID_HEIGHT);
+    std::list<Position> snake;
+    resetGame(grid, snake);
+
+    sf::RenderWindow window(sf::VideoMode({ GRID_WIDTH * CELL_SIZE, GRID_HEIGHT * CELL_SIZE }), "Snake");
     window.setFramerateLimit(60);
 
     sf::Font font;
@@ -246,7 +265,16 @@ int main()
             }
             else if (const auto* key = event->getIf<sf::Event::KeyPressed>())
             {
-                if (key->code == sf::Keyboard::Key::Up && direction.y != 1)
+                if (gameOver && key->code == sf::Keyboard::Key::R)
+                {
+                    resetGame(grid, snake);
+                    direction = { 1, 0 };
+                    nextDirection = direction;
+                    score = 0;
+                    gameOver = false;
+                    moveClock.restart();
+                }
+                else if (key->code == sf::Keyboard::Key::Up && direction.y != 1)
                     nextDirection = { 0, -1 };
                 else if (key->code == sf::Keyboard::Key::Down && direction.y != -1)
                     nextDirection = { 0, 1 };
@@ -262,15 +290,11 @@ int main()
             moveClock.restart();
             direction = nextDirection;
 
-            int oldScore = score;
             if (!moveSnake(snake, grid, direction, score))
                 gameOver = true;
-
-            if (score != oldScore)
-                window.setTitle("Snake - Score: " + std::to_string(score));
         }
 
-        displayGrid(window, grid, snake, gameOver, font);
+        displayGrid(window, grid, snake, gameOver, font, score);
     }
 
     return 0;
